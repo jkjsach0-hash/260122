@@ -99,3 +99,5 @@ if df is not None:
                                  textposition="top center"))
 
         st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning(f"{target_date.year}년 {target_md} 데이터가 없습니다.")
