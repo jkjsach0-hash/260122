@@ -2,95 +2,100 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime
+import os
 
 # 페이지 설정
 st.set_page_config(page_title="서울 기온 역사 비교기", layout="wide")
 
-# 데이터 로드 함수
 @st.cache_data
-def load_data(file):
-    # 상단 7행의 메타데이터 제외하고 로드
-    df = pd.read_csv(file, encoding='cp949', skiprows=7)
-    # 컬럼명 정리 (공백 및 탭 제거)
-    df.columns = [col.strip() for col in df.columns]
-    # 날짜 컬럼 전처리 (탭 제거 및 날짜형 변환)
-    df['날짜'] = pd.to_datetime(df['날짜'].str.strip())
-    # 월-일 정보 추출
-    df['월일'] = df['날짜'].dt.strftime('%m-%d')
-    df['연도'] = df['날짜'].dt.year
-    return df
+def load_data(file_path_or_buffer):
+    try:
+        # 1. 인코딩 시도 (CP949 -> UTF-8)
+        try:
+            df = pd.read_csv(file_path_or_buffer, encoding='cp949', skiprows=7)
+        except:
+            df = pd.read_csv(file_path_or_buffer, encoding='utf-8', skiprows=7)
+            
+        # 2. 컬럼명 정제
+        df.columns = [col.strip() for col in df.columns]
+        
+        # 3. 데이터 정제 (탭 문자 제거 및 날짜 변환)
+        # 문자열로 들어오는 경우를 대비해 strip() 적용
+        df['날짜'] = df['날짜'].astype(str).str.strip()
+        df['날짜'] = pd.to_datetime(df['날짜'])
+        
+        # 4. 분석용 파생 변수 생성
+        df['월일'] = df['날짜'].dt.strftime('%m-%d')
+        df['연도'] = df['날짜'].dt.year
+        
+        # 5. 수치 데이터 형변환 (결측치 처리 포함)
+        for col in ['평균기온(℃)', '최저기온(℃)', '최고기온(℃)']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+        return df
+    except Exception as e:
+        st.error(f"데이터를 읽는 중 오류가 발생했습니다: {e}")
+        return None
 
 st.title("🌡️ 서울 기온 역사 비교기")
-st.markdown("특정 날짜의 기온이 역대 같은 날에 비해 얼마나 더웠는지 혹은 추웠는지 비교합니다.")
+st.markdown("특정 날짜의 기온이 과거와 비교해 얼마나 변화했는지 확인하세요.")
 
-# 1. 파일 업로드 로직
-uploaded_file = st.file_uploader("추가 기온 데이터 파일을 업로드하세요 (CSV)", type=['csv'])
+# 파일 처리 로직
+DEFAULT_FILE = "ta_20260122174530.csv"
+uploaded_file = st.file_uploader("새로운 CSV 파일을 업로드하여 데이터를 업데이트하세요", type=['csv'])
 
-# 파일 선택 (업로드 파일 우선, 없으면 기본 파일 사용)
 if uploaded_file is not None:
     df = load_data(uploaded_file)
-    st.success("새로운 데이터를 성공적으로 불러왔습니다!")
+    st.success("새 데이터를 불러왔습니다.")
+elif os.path.exists(DEFAULT_FILE):
+    df = load_data(DEFAULT_FILE)
+    st.info("기본 데이터를 사용 중입니다.")
 else:
-    # 기본 파일 (사용자가 업로드했던 파일명)
-    try:
-        df = load_data("ta_20260122174530.csv")
-        st.info("기본 탑재된 서울 기온 데이터를 사용 중입니다.")
-    except:
-        st.error("데이터 파일을 찾을 수 없습니다. CSV 파일을 업로드해주세요.")
-        st.stop()
+    st.warning("데이터 파일이 없습니다. CSV 파일을 업로드해주세요.")
+    df = None
 
-# 2. 날짜 선택 및 비교 로직
-st.sidebar.header("🔍 분석 설정")
-max_date = df['날짜'].max()
-min_date = df['날짜'].min()
+if df is not None:
+    # 사이드바 설정
+    st.sidebar.header("🔍 날짜 선택")
+    latest_date = df['날짜'].max()
+    target_date = st.sidebar.date_input("비교할 날짜", 
+                                       value=latest_date,
+                                       min_value=df['날짜'].min(),
+                                       max_value=latest_date)
 
-target_date = st.sidebar.date_input(
-    "비교하고 싶은 날짜를 선택하세요",
-    value=max_date,
-    min_value=min_date,
-    max_value=max_date
-)
-
-# 선택한 날짜의 데이터 추출
-target_day_data = df[df['날짜'] == pd.Timestamp(target_date)]
-
-if not target_day_data.empty:
-    selected_temp = target_day_data.iloc[0]['평균기온(℃)']
+    # 같은 월-일 데이터 필터링
     target_md = target_date.strftime('%m-%d')
+    historical_data = df[df['월일'] == target_md].dropna(subset=['평균기온(℃)'])
     
-    # 역대 같은 날짜(월-일) 데이터 필터링
-    historical_same_day = df[df['월일'] == target_md]
-    avg_historical_temp = historical_same_day['평균기온(℃)'].mean()
-    diff = selected_temp - avg_historical_temp
+    # 선택 날짜 데이터
+    current_data = historical_data[historical_data['연도'] == target_date.year]
     
-    # 메트릭 표시
-    col1, col2, col3 = st.columns(3)
-    col1.metric("선택한 날 기온", f"{selected_temp}°C")
-    col2.metric("역대 평균 ({})".format(target_md), f"{avg_historical_temp:.1f}°C")
-    col3.metric("평균 대비 차이", f"{diff:.1f}°C", delta=diff)
+    if not current_data.empty:
+        curr_temp = current_data.iloc[0]['평균기온(℃)']
+        hist_avg = historical_data['평균기온(℃)'].mean()
+        diff = curr_temp - hist_avg
+        
+        # 상단 지표
+        c1, c2, c3 = st.columns(3)
+        c1.metric(f"{target_date.year}년 기온", f"{curr_temp}°C")
+        c2.metric(f"역대 {target_md} 평균", f"{hist_avg:.1f}°C")
+        c3.metric("평균 대비", f"{diff:.1f}°C", delta=round(diff, 1))
 
-    # 3. Plotly 시각화 (인터랙티브 그래프)
-    st.subheader(f"📊 {target_md}의 역대 기온 변화 추이")
-    
-    fig = px.line(historical_same_day, x='연도', y='평균기온(℃)', 
-                  title=f"역대 {target_md}의 평균 기온 기록",
-                  markers=True,
-                  labels={'평균기온(℃)': '기온(°C)', '연도': '연도'})
-    
-    # 기준선(역대 평균) 추가
-    fig.add_hline(y=avg_historical_temp, line_dash="dash", line_color="red", 
-                  annotation_text="역대 평균")
-    
-    # 선택한 날짜 강조
-    fig.add_trace(go.Scatter(x=[target_date.year], y=[selected_temp],
-                             mode='markers', marker=dict(color='orange', size=12),
-                             name='선택한 날짜'))
+        # 시각화
+        st.subheader(f"📊 역대 {target_md} 기온 변화 (Plotly 인터랙티브)")
+        
+        fig = px.scatter(historical_data, x='연도', y='평균기온(℃)',
+                         trendline="lowess", # 추세선 추가
+                         title=f"서울 {target_md} 평균 기온 추이",
+                         labels={'평균기온(℃)': '기온(°C)'},
+                         template="plotly_white")
+        
+        # 선택한 날짜 강조 표시
+        fig.add_trace(go.Scatter(x=[target_date.year], y=[curr_temp],
+                                 mode='markers+text',
+                                 marker=dict(color='red', size=15, symbol='star'),
+                                 name='선택한 날짜',
+                                 text=[f"{target_date.year}년"],
+                                 textposition="top center"))
 
-    st.plotly_chart(fig, use_container_width=True)
-
-    # 상세 데이터 테이블
-    with st.expander("역대 같은 날짜 데이터 상세보기"):
-        st.write(historical_same_day[['날짜', '평균기온(℃)', '최저기온(℃)', '최고기온(℃)']].sort_values(by='날짜', ascending=False))
-else:
-    st.warning("선택한 날짜에 대한 관측 데이터가 없습니다.")
+        st.plotly_chart(fig, use_container_width=True)
